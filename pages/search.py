@@ -48,25 +48,40 @@ layout = dbc.Container([
         html.Div(id="search-results-container"),
     ]),
 
-    # Store para resultados raw
+    # Paginação
+    dbc.Row([
+        dbc.Col(dbc.Button("⬅️ Anterior", id="btn-prev-page", color="secondary", size="sm", outline=True), width="auto"),
+        dbc.Col(html.Span(id="search-page-info", className="text-muted small align-self-center"), width="auto"),
+        dbc.Col(dbc.Button("Próxima ➡️", id="btn-next-page", color="secondary", size="sm", outline=True), width="auto"),
+    ], className="mt-2 mb-3 g-2", justify="center", align="center"),
+
+    # Store para resultados raw e página
     dcc.Store(id="search-raw-results"),
+    dcc.Store(id="search-current-page", data=0),
 
     # Feedback de ação
     html.Div(id="search-action-feedback"),
 ])
 
 
-def _build_results_table(results: list) -> html.Div:
-    """Constrói tabela HTML com botão de ação por linha."""
+PAGE_SIZE = 25
+
+
+def _build_results_table(results: list, page: int = 0) -> html.Div:
+    """Constrói tabela HTML paginada com botão de ação por linha."""
     if not results:
         return html.Div()
 
-    # Pegar seller_ids já cadastrados
-    existing = {c["seller_id"] for c in get_competitors(active_only=False) if c["seller_id"]}
+    start = page * PAGE_SIZE
+    end = start + PAGE_SIZE
+    page_results = results[start:end]
 
+    existing = {c["seller_id"] for c in get_competitors(active_only=False) if c["seller_id"]}
     status_icons = {"active": "🟢", "inactive": "🔴", "catalog_only": "📦"}
+
     rows = []
-    for i, r in enumerate(results):
+    for i, r in enumerate(page_results):
+        real_idx = start + i
         seller_id = str(r.get("seller", {}).get("id", ""))
         seller_nick = r.get("seller", {}).get("nickname", "")
         already_added = seller_id in existing
@@ -74,7 +89,7 @@ def _build_results_table(results: list) -> html.Div:
         action_btn = html.Td(
             dbc.Button(
                 "Já cadastrado" if already_added else "+ Concorrente",
-                id={"type": "btn-add-seller", "index": i},
+                id={"type": "btn-add-seller", "index": real_idx},
                 color="secondary" if already_added else "success",
                 size="sm", outline=True,
                 disabled=already_added or not seller_id,
@@ -113,7 +128,11 @@ def _build_results_table(results: list) -> html.Div:
     Output("search-chart", "figure"),
     Output("search-chart", "style"),
     Output("search-results-container", "children"),
+    Output("search-page-info", "children"),
+    Output("btn-prev-page", "disabled"),
+    Output("btn-next-page", "disabled"),
     Output("search-raw-results", "data"),
+    Output("search-current-page", "data"),
     Output("store-search-results", "data"),
     Input("btn-search", "n_clicks"),
     State("search-input", "value"),
@@ -122,10 +141,12 @@ def _build_results_table(results: list) -> html.Div:
     prevent_initial_call=True,
 )
 def do_search(n_clicks, query, status, per_page):
+    empty = (no_update,) * 11
     if not query:
         return (
             dbc.Alert("Digite um termo de busca.", color="warning"),
-            [], {}, {"display": "none"}, html.Div(), no_update, no_update,
+            [], {}, {"display": "none"}, html.Div(), "", True, True,
+            no_update, 0, no_update,
         )
 
     per_page = int(per_page)
@@ -136,7 +157,8 @@ def do_search(n_clicks, query, status, per_page):
         detail = data.get("detail", data.get("error", "")) if data else "Sem resposta"
         return (
             dbc.Alert(f"Erro: {detail}", color="danger"),
-            [], {}, {"display": "none"}, html.Div(), no_update, no_update,
+            [], {}, {"display": "none"}, html.Div(), "", True, True,
+            no_update, 0, no_update,
         )
 
     results = data.get("results", [])
@@ -145,7 +167,8 @@ def do_search(n_clicks, query, status, per_page):
     if not results:
         return (
             dbc.Alert("Nenhum resultado encontrado.", color="info"),
-            [], {}, {"display": "none"}, html.Div(), no_update, no_update,
+            [], {}, {"display": "none"}, html.Div(), "", True, True,
+            no_update, 0, no_update,
         )
 
     feedback = dbc.Alert(f"{total:,} produtos no catálogo · {len(results)} anúncios encontrados", color="success")
@@ -169,8 +192,41 @@ def do_search(n_clicks, query, status, per_page):
         fig = {}
         chart_style = {"display": "none"}
 
-    table = _build_results_table(results)
-    return feedback, metrics, fig, chart_style, table, results, results
+    total_pages = max(1, (len(results) + PAGE_SIZE - 1) // PAGE_SIZE)
+    page_info = f"Página 1 de {total_pages}"
+    table = _build_results_table(results, page=0)
+    return (feedback, metrics, fig, chart_style, table, page_info,
+            True, total_pages <= 1, results, 0, results)
+
+
+@callback(
+    Output("search-results-container", "children", allow_duplicate=True),
+    Output("search-page-info", "children", allow_duplicate=True),
+    Output("btn-prev-page", "disabled", allow_duplicate=True),
+    Output("btn-next-page", "disabled", allow_duplicate=True),
+    Output("search-current-page", "data", allow_duplicate=True),
+    Input("btn-prev-page", "n_clicks"),
+    Input("btn-next-page", "n_clicks"),
+    State("search-raw-results", "data"),
+    State("search-current-page", "data"),
+    prevent_initial_call=True,
+)
+def paginate(prev_clicks, next_clicks, results, current_page):
+    if not results:
+        return no_update, no_update, True, True, 0
+
+    total_pages = max(1, (len(results) + PAGE_SIZE - 1) // PAGE_SIZE)
+    trigger = ctx.triggered_id
+    page = current_page or 0
+
+    if trigger == "btn-next-page":
+        page = min(page + 1, total_pages - 1)
+    elif trigger == "btn-prev-page":
+        page = max(page - 1, 0)
+
+    table = _build_results_table(results, page=page)
+    page_info = f"Página {page + 1} de {total_pages}"
+    return table, page_info, page <= 0, page >= total_pages - 1, page
 
 
 @callback(
@@ -178,9 +234,10 @@ def do_search(n_clicks, query, status, per_page):
     Output("search-results-container", "children", allow_duplicate=True),
     Input({"type": "btn-add-seller", "index": ALL}, "n_clicks"),
     State("search-raw-results", "data"),
+    State("search-current-page", "data"),
     prevent_initial_call=True,
 )
-def add_seller_as_competitor(n_clicks_list, results):
+def add_seller_as_competitor(n_clicks_list, results, current_page):
     if not any(n_clicks_list) or not results:
         return no_update, no_update
 
@@ -210,8 +267,7 @@ def add_seller_as_competitor(n_clicks_list, results):
         name=seller_nick or f"Seller {seller_id}",
     )
 
-    # Rebuild table para atualizar botões
-    table = _build_results_table(results)
+    table = _build_results_table(results, page=current_page or 0)
     return (
         dbc.Alert(f"Concorrente adicionado: {seller_nick or seller_id}", color="success"),
         table,

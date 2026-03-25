@@ -2,7 +2,7 @@
 
 ## Visão Geral do Projeto
 
-Dashboard local (Streamlit) para análise de concorrentes de **peças de servidor** no Mercado Livre, com insights de IA via Claude. Projeto pessoal, roda 100% local no PC do desenvolvedor.
+Dashboard local (Dash/Plotly) para análise de concorrentes de **peças de servidor** no Mercado Livre, com insights de IA via Claude. Projeto pessoal, roda 100% local no PC do desenvolvedor (WSL2 Ubuntu).
 
 ### Problema que resolve
 O usuário importa peças de servidor (RAM ECC, HDD SAS, SSD Enterprise, NICs, RAID controllers) e revende no Mercado Livre. Precisa monitorar preços de concorrentes, identificar oportunidades de margem, e tomar decisões de compra/cotação baseadas em dados reais de mercado.
@@ -16,14 +16,14 @@ Um único usuário (o desenvolvedor), uso pessoal e local.
 
 | Camada | Tecnologia | Justificativa |
 |--------|------------|---------------|
-| UI/Dashboard | **Streamlit** | Roda local no browser, rápido de prototipar, Python nativo |
-| API ML | **httpx** (async) | Cliente HTTP async, melhor que requests para múltiplas chamadas |
+| UI/Dashboard | **Dash (Plotly)** + **dash-bootstrap-components** | Multi-page, callbacks explícitos, production-ready |
+| API ML | **httpx** (async) | Cliente HTTP async para múltiplas chamadas concorrentes |
 | IA/Insights | **Claude Agent SDK** + OAuth | Usa assinatura Max ($200/mês) via `CLAUDE_CODE_OAUTH_TOKEN`, sem custo extra de API |
 | IA fallback | **claude CLI** subprocess | `claude -p` como fallback se o SDK falhar — sempre funciona com sessão OAuth |
 | Dados | **pandas** | Manipulação de dados tabulares |
-| Gráficos | **plotly** | Gráficos interativos |
+| Gráficos | **plotly** | Gráficos interativos (nativo no Dash) |
 | Export | **openpyxl** | Exportar para Excel |
-| Persistência | **SQLite** (futuro) | Para histórico de preços e tracking ao longo do tempo |
+| Persistência | **SQLite** | Banco local para concorrentes e histórico de preços |
 | Config | **python-dotenv** | Variáveis de ambiente via `.env` |
 
 ---
@@ -32,14 +32,32 @@ Um único usuário (o desenvolvedor), uso pessoal e local.
 
 ```
 ml-dashboard/
-├── CLAUDE.md              ← ESTE ARQUIVO (contexto para o Claude Code)
-├── app.py                 ← Dashboard Streamlit principal (entrypoint)
+├── CLAUDE.md                  ← ESTE ARQUIVO (contexto para o Claude Code)
+├── app.py                     ← Inicialização Dash + layout base + navbar
+├── pages/
+│   ├── search.py              ← Busca de produtos no catálogo ML
+│   ├── competitors.py         ← CRUD + análise de concorrentes
+│   ├── insights.py            ← Insights IA com Claude
+│   ├── export.py              ← Download Excel/JSON
+│   ├── settings.py            ← OAuth tokens (Claude + ML)
+│   └── home.py                ← Redirect para /search
+├── components/
+│   ├── __init__.py
+│   ├── navbar.py              ← Barra de navegação (dbc.Navbar)
+│   └── cards.py               ← Cards de métricas reutilizáveis
 ├── src/
 │   ├── __init__.py
-│   ├── ml_api.py          ← Cliente async da API do Mercado Livre (MLClient)
-│   └── ai_insights.py     ← Módulo de IA (Claude Agent SDK + CLI fallback)
-├── .env                   ← Tokens (NÃO committar, está no .gitignore)
-├── .env.example           ← Template de configuração
+│   ├── ml_api.py              ← Cliente async da API do Mercado Livre (MLClient)
+│   ├── ai_insights.py         ← Módulo de IA (Claude Agent SDK + CLI fallback)
+│   ├── auth.py                ← OAuth handlers (Claude + ML)
+│   ├── database.py            ← SQLite — persistência local
+│   └── async_helper.py        ← Wrapper run_async() para callbacks Dash
+├── assets/
+│   └── style.css              ← CSS custom (Dash auto-carrega)
+├── data/
+│   └── ml_dashboard.db        ← Banco SQLite (gitignored)
+├── .env                       ← Tokens (NÃO committar, está no .gitignore)
+├── .env.example               ← Template de configuração
 ├── .gitignore
 ├── requirements.txt
 ├── pyproject.toml
@@ -52,25 +70,27 @@ ml-dashboard/
 
 ### Mercado Livre API
 - **Token**: `ML_ACCESS_TOKEN` no `.env`
-- **APP ID**: `4724076426479961`
+- **APP ID**: `ML_APP_ID` no `.env` (default: `4724076426479961`)
 - **Site**: `MLB` (Brasil)
 - **Base URL**: `https://api.mercadolibre.com`
-- **Redirect URI**: `https://github.com/cfpperche/redirect`
+- **Redirect URI**: `ML_REDIRECT_URI` no `.env` (`https://github.com/cfpperche/redirect`)
 - **Token expira em 6h** — renovar com `ML_REFRESH_TOKEN` via POST para `/oauth/token`
 - **Rate limit**: 0.4s delay entre requests (implementado no `MLClient._get()`)
+- **IMPORTANTE**: O endpoint `/sites/MLB/search` está bloqueado por policy do ML para este app. A busca usa `/products/search` (catálogo) + `/products/{id}/items` (anúncios ativos/inativos).
 - **Endpoints usados**:
-  - `GET /sites/MLB/search?q={query}` — busca por termo
-  - `GET /sites/MLB/search?nickname={nick}` — produtos de vendedor
-  - `GET /sites/MLB/search?seller_id={id}` — produtos por seller ID
-  - `GET /items/{item_id}` — detalhes do item
+  - `GET /products/search?site_id=MLB&q={query}` — busca no catálogo
+  - `GET /products/{id}/items?status={active|inactive}` — anúncios de um produto
   - `GET /users/me` — verificar conexão
   - `GET /users/{user_id}` — info de vendedor
+  - `GET /users/{user_id}/items/search` — items do próprio vendedor
+  - `POST /oauth/token` — trocar code por token ou refresh
 - **Todas as chamadas requerem header**: `Authorization: Bearer {token}`
 
 ### Claude AI (via OAuth da assinatura Max)
 - **Plano**: Claude Max $200/mês
 - **Token**: `CLAUDE_CODE_OAUTH_TOKEN` no `.env` (formato `sk-ant-oat01-XXXXX`)
-- **Gerar token**: `claude setup-token` no terminal
+- **Gerar token**: `claude setup-token` no terminal, ou sincronizar via Settings no dashboard
+- **Credenciais**: lidas de `~/.claude/.credentials.json`
 - **Método primário**: Claude Agent SDK Python (`claude_agent_sdk.query()`)
 - **Método fallback**: `claude -p "prompt" --output-format text` como subprocesso
 - **System prompt da IA**: "analista especialista em e-commerce e peças de servidor, insights acionáveis em português"
@@ -78,43 +98,52 @@ ml-dashboard/
 
 ---
 
-## Funcionalidades Implementadas (v0.1)
+## Funcionalidades Implementadas (v0.2)
 
-### Tab 1: 🔎 Busca de Produtos
-- Input de texto para busca livre no ML
-- 4 botões de busca rápida (8GB DDR4 UDIMM, 16GB DDR4 RDIMM, 32GB DDR4 RDIMM, 16GB DDR5 RDIMM)
+### /search — Busca de Produtos
+- Search bar + botão Buscar
+- Filtros: status (Todos/Ativos/Inativos) e itens por página
 - Métricas: menor/maior/média/mediana de preços
 - Histograma de distribuição de preços (Plotly)
-- Tabela de resultados com título, preço, vendedor, frete, link
+- Tabela HTML com colunas: Status, Título, Preço, Marca, Modelo, Seller ID, Vendedor, Frete, Link
+- Botão "+ Concorrente" por linha para auto-cadastrar seller no banco
+- Paginação com botões Anterior/Próxima
 
-### Tab 2: 👥 Análise de Concorrentes
-- Input de nicknames de vendedores (um por linha)
-- Pré-configurados: REDDAPPLE1, ELETROCHEAP
-- Busca todos os produtos de cada vendedor
-- Gráfico de barras: qtd de anúncios por concorrente
-- Box plot: distribuição de preços por concorrente
-- Tabela detalhada com todos os produtos
+### /competitors — Concorrentes (CRUD)
+- Formulário para cadastrar concorrente (nome, nickname, seller ID, notas)
+- Tabela com todos os concorrentes (ativos e inativos)
+- Editar via modal (todos os campos + toggle ativo/inativo)
+- Excluir concorrente
+- Botão "Analisar Todos" busca produtos de todos os concorrentes ativos
+- Gráfico de barras (qtd anúncios) + box plot (faixa de preços)
 
-### Tab 3: 🤖 Insights IA
+### /insights — Insights IA
 - Escolha de fonte de dados (busca, concorrentes, ou prompt livre)
 - Prompt editável pelo usuário
-- Claude analisa os dados e retorna insights estratégicos
-- Histórico de análises salvo no session_state
+- Claude analisa os dados e retorna insights estratégicos em markdown
+- Histórico de análises com accordion expansível
 
-### Tab 4: 📥 Exportar
+### /export — Exportar
 - Download Excel dos resultados de busca
 - Download Excel dos dados de concorrentes
 - Download JSON das análises IA
+- Usa `dcc.Download` com callbacks
+
+### /settings — Configuração de Tokens
+- **Claude**: detecta token de `~/.claude/.credentials.json`, mostra plano e expiração, botão sincronizar
+- **ML**: status de Access Token e Client Secret, input para secret, botão "Autorizar Mercado Livre" (abre Chrome no Windows via WSL), campo para colar URL de callback, botão refresh token
+- **Testar Conexão**: verifica se o token ML está válido
 
 ---
 
 ## Funcionalidades Planejadas (Roadmap)
 
-### v0.2 — Persistência e Histórico
-- [ ] SQLite para salvar resultados de busca com timestamp
+### v0.2 — Persistência e Histórico (em progresso)
+- [x] SQLite para concorrentes (CRUD completo)
+- [ ] Salvar resultados de busca no SQLite com timestamp (histórico de preços)
 - [ ] Gráfico de evolução de preços ao longo do tempo
 - [ ] Dashboard de tendências (preço subiu/desceu por part number)
-- [ ] Auto-refresh do ML token via refresh_token
+- [ ] Auto-refresh do ML token via refresh_token (quando dá 401)
 
 ### v0.3 — Análise Avançada
 - [ ] Busca por Part Number específico com comparação entre vendedores
@@ -136,7 +165,6 @@ ml-dashboard/
 - [ ] Predição de demanda baseada em sazonalidade
 
 ### v1.0 — Produção Local
-- [ ] Multi-page Streamlit (páginas separadas em vez de tabs)
 - [ ] Autenticação local (senha simples para proteger dashboard)
 - [ ] Scheduler para coleta automática de dados (cron + script)
 - [ ] Backup automático do SQLite
@@ -180,27 +208,36 @@ ml-dashboard/
 ### Python
 - Python 3.10+ (usa type hints modernas como `str | None`)
 - Async/await para I/O (httpx, Agent SDK)
-- `run_async()` wrapper para rodar coroutines no Streamlit (que é sync)
+- `run_async()` wrapper em `src/async_helper.py` para rodar coroutines em callbacks Dash (que são sync)
 - Imports agrupados: stdlib → third-party → local
 - Docstrings em português para módulos e funções públicas
 - f-strings para formatação
 - Formatação de moeda: `f"R$ {valor:,.2f}"`
 
-### Streamlit
-- `st.session_state` para persistir dados entre reruns
-- `st.spinner()` durante chamadas à API
-- `st.toast()` para feedback rápido
-- `st.columns()` para layout
-- `st.tabs()` para organizar funcionalidades
-- `st.dataframe()` com `column_config` para formatação
-- `st.plotly_chart()` para gráficos interativos
+### Dash
+- Multi-page com `pages/` directory e `dash.register_page()`
+- Callbacks com `@callback` + `Input`, `Output`, `State`
+- `prevent_initial_call=True` em callbacks de botão
+- `dcc.Store` para estado compartilhado entre páginas (memory)
+- `dcc.Loading` para feedback durante chamadas à API
+- `dcc.Download` para exportação de arquivos
+- `dbc.Alert` para feedback (success, danger, warning, info)
+- Pattern-matching callbacks com `ALL` para botões dinâmicos em tabelas
+- `allow_duplicate=True` quando múltiplos callbacks escrevem no mesmo Output
 
 ### Mercado Livre API
 - Sempre enviar `Authorization: Bearer` no header
 - Rate limit de 0.4s entre requests
-- Tratar erros 401 (token expirado), 429 (rate limit), e exceções de rede
-- Resultados paginados: ML retorna max 50 por request, usar offset para mais
+- `/sites/MLB/search` bloqueado — usar `/products/search` + `/products/{id}/items`
+- Items de terceiros via `/items/{id}` retornam 403 — só items próprios acessíveis
+- Tratar erros 401 (token expirado), 403 (bloqueio policy), 429 (rate limit)
 - Campos referenciáveis: `sold_quantity` e `available_quantity` são referenciais (não exatos)
+
+### SQLite
+- Banco em `data/ml_dashboard.db` (gitignored)
+- Tabelas inicializadas automaticamente ao importar `src/database.py`
+- `PRAGMA journal_mode=WAL` para performance
+- `sqlite3.Row` para acessar colunas por nome
 
 ---
 
@@ -216,23 +253,29 @@ cp .env.example .env
 
 # Gerar OAuth token do Claude
 claude setup-token
-# Copiar o token para CLAUDE_CODE_OAUTH_TOKEN no .env
+# Ou sincronizar via /settings no dashboard
 
 # Rodar dashboard
-streamlit run app.py
-# Abre em http://localhost:8501
+python app.py
+# Abre em http://localhost:8050
 ```
 
 ---
 
 ## Decisões Técnicas
 
-1. **Streamlit vs FastAPI+React**: Streamlit escolhido por ser protótipo local — menor complexidade, tudo em Python, sem build frontend separado. Migrar para FastAPI+React se virar multi-usuário.
+1. **Dash vs Streamlit**: Migrado de Streamlit para Dash na v0.2. Streamlit reroda o script inteiro a cada interação, causava erros de "Event loop is closed" com async e não suportava callbacks reais. Dash tem callbacks explícitos, multi-page nativo, e arquitetura production-ready.
 
-2. **httpx vs requests**: httpx por ser async e suportar o event loop do Streamlit sem conflitos.
+2. **httpx vs requests**: httpx por ser async e suportar chamadas concorrentes sem bloquear.
 
 3. **Claude Agent SDK + CLI fallback**: SDK é o caminho mais limpo, mas pode ter issues com OAuth. CLI (`claude -p`) é infalível como backup porque usa a sessão OAuth logada diretamente.
 
-4. **Sem banco de dados na v0.1**: Session state do Streamlit é suficiente para protótipo. SQLite planejado para v0.2 para persistir histórico de preços.
+4. **SQLite para persistência**: Banco local leve, sem setup de servidor. Usado para CRUD de concorrentes, planejado para histórico de preços.
 
-5. **Planilha de cotação separada**: Já existe uma planilha Excel completa (top10_ram_cotacao.xlsx) com 5 abas — DDR4, DDR5, concorrentes, RFQ, e catálogo completo de 47 modelos. Integrar com o dashboard na v0.3.
+5. **`/products/search` em vez de `/sites/MLB/search`**: A API do ML bloqueou o endpoint de busca padrão por policy (`PA_UNAUTHORIZED_RESULT_FROM_POLICIES`). A alternativa usa catálogo + items vinculados.
+
+6. **WSL + Chrome**: Em WSL, abrir browser no Windows requer chamar `chrome.exe` diretamente via `/mnt/c/Program Files/Google/Chrome/Application/chrome.exe`.
+
+7. **Tabela HTML vs DataTable**: A tabela de resultados de busca usa HTML (`dbc.Table`) em vez de `dash_table.DataTable` para suportar botões de ação ("+  Concorrente") por linha. DataTable não permite componentes Dash nas células.
+
+8. **Planilha de cotação separada**: Já existe uma planilha Excel completa (top10_ram_cotacao.xlsx) com 5 abas — DDR4, DDR5, concorrentes, RFQ, e catálogo completo de 47 modelos. Integrar com o dashboard na v0.3.
