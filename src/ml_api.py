@@ -35,9 +35,29 @@ class MLClient:
             self._last_call = time.time()
             if r.status_code == 200:
                 return r.json()
+            # Auto-refresh on 401
+            if r.status_code == 401 and not getattr(self, "_refreshed", False):
+                refreshed = self._try_refresh_token()
+                if refreshed:
+                    self._refreshed = True
+                    return await self._get(path, params)
             return {"error": r.status_code, "detail": r.text[:300]}
         except Exception as e:
             return {"error": "exception", "detail": str(e)}
+
+    def _try_refresh_token(self) -> bool:
+        """Tenta renovar o token ML via refresh_token."""
+        try:
+            from src.auth import refresh_ml_token
+            ok, msg = refresh_ml_token()
+            if ok:
+                load_dotenv(override=True)
+                self.token = os.getenv("ML_ACCESS_TOKEN", "")
+                self._client = None  # força recriação do client
+                return True
+        except Exception:
+            pass
+        return False
 
     # ── BUSCA ──────────────────────────────────────────
 

@@ -10,6 +10,7 @@ navbar = dbc.Navbar(
             ), width="auto"),
             dbc.Col(dbc.Nav([
                 dbc.NavItem(dbc.NavLink("Busca", href="/search")),
+                dbc.NavItem(dbc.NavLink("Histórico", href="/history")),
                 dbc.NavItem(dbc.NavLink("Concorrentes", href="/competitors")),
                 dbc.NavItem(dbc.NavLink("Insights IA", href="/insights")),
                 dbc.NavItem(dbc.NavLink("Exportar", href="/export")),

@@ -6,7 +6,7 @@ from dash import callback, dcc, html, dash_table, Input, Output, State, no_updat
 
 from src.ml_api import MLClient
 from src.async_helper import run_async
-from src.database import create_competitor, get_competitors
+from src.database import create_competitor, get_competitors, save_search_results
 from components.cards import metric_card
 
 dash.register_page(__name__, path="/search", name="Busca")
@@ -191,6 +191,9 @@ def do_search(n_clicks, query, status, per_page):
     else:
         fig = {}
         chart_style = {"display": "none"}
+
+    # Salvar no histórico
+    save_search_results(query, results)
 
     total_pages = max(1, (len(results) + PAGE_SIZE - 1) // PAGE_SIZE)
     page_info = f"Página 1 de {total_pages}"
