@@ -1,0 +1,8 @@
+[project]
+name = "ml-dashboard"
+version = "0.1.0"
+description = "Mercado Livre Competitor Intelligence Dashboard"
+requires-python = ">=3.10"
+
+[tool.setuptools]
+packages = ["src"]
