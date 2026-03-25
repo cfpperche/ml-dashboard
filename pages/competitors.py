@@ -6,9 +6,28 @@ from dash import callback, dcc, html, dash_table, Input, Output, State, no_updat
 
 from src.ml_api import MLClient
 from src.async_helper import run_async
-from src.database import get_competitors, create_competitor, update_competitor, delete_competitor
+from src.database import (
+    get_competitors, get_competitor, create_competitor,
+    update_competitor, delete_competitor,
+)
 
 dash.register_page(__name__, path="/competitors", name="Concorrentes")
+
+
+def _reputation_badge(level: str, power: str) -> str:
+    """Retorna emoji para nível de reputação."""
+    badges = {
+        "5_green": "🟢 Excelente",
+        "4_light_green": "🟡 Boa",
+        "3_yellow": "🟠 Regular",
+        "2_orange": "🔴 Ruim",
+        "1_red": "⛔ Muito ruim",
+    }
+    rep = badges.get(level, level or "—")
+    if power:
+        ps = {"platinum": "💎", "gold": "🥇", "silver": "🥈"}.get(power, "")
+        rep += f" {ps} {power.title()}"
+    return rep
 
 
 def _competitors_table():
@@ -20,11 +39,17 @@ def _competitors_table():
     rows = []
     for c in comps:
         status = "🟢" if c["active"] else "🔴"
+        rep = _reputation_badge(c.get("reputation_level", ""), c.get("power_seller", ""))
+        transactions = c.get("total_transactions", 0)
+        tx_str = f"{transactions:,}" if transactions else "—"
+
         rows.append(html.Tr([
             html.Td(status),
             html.Td(c["name"] or "—"),
             html.Td(c["nickname"] or "—"),
             html.Td(c["seller_id"] or "—"),
+            html.Td(rep),
+            html.Td(tx_str, style={"textAlign": "right"}),
             html.Td(c["notes"] or "—"),
             html.Td([
                 dbc.ButtonGroup([
@@ -39,7 +64,8 @@ def _competitors_table():
     return dbc.Table([
         html.Thead(html.Tr([
             html.Th(""), html.Th("Nome"), html.Th("Nickname"),
-            html.Th("Seller ID"), html.Th("Notas"), html.Th("Ações"),
+            html.Th("Seller ID"), html.Th("Reputação"), html.Th("Vendas"),
+            html.Th("Notas"), html.Th("Ações"),
         ])),
         html.Tbody(rows),
     ], bordered=True, hover=True, responsive=True, size="sm")
@@ -82,13 +108,19 @@ layout = dbc.Container([
     html.Div(id="comp-table-container", children=_competitors_table()),
     html.Div(id="comp-crud-feedback"),
 
+    # Ações em massa
+    dbc.Row([
+        dbc.Col(dbc.Button("Atualizar Perfis", id="btn-update-profiles", color="info",
+                           outline=True, size="sm"), width="auto"),
+        dbc.Col(dbc.Button("Analisar Todos", id="btn-analyze-comp", color="primary",
+                           size="sm"), width="auto"),
+    ], className="mt-2 mb-3 g-2"),
+
+    html.Div(id="comp-profile-feedback"),
+
     html.Hr(),
 
     # ── ANÁLISE ──
-    html.H5("Analisar Concorrentes", className="mb-3"),
-    html.P("Busca produtos dos concorrentes ativos cadastrados acima.", className="text-muted"),
-    dbc.Button("Analisar Todos", id="btn-analyze-comp", color="primary", className="mb-3"),
-
     dcc.Loading(id="comp-loading", type="default", children=[
         html.Div(id="comp-feedback"),
         dcc.Graph(id="comp-chart-bar", style={"display": "none"}),
@@ -129,7 +161,7 @@ def add_competitor(n_clicks, name, nickname, seller_id, notes):
         return no_update, dbc.Alert("Preencha pelo menos nome, nickname ou seller ID.", color="warning"), no_update, no_update, no_update, no_update
     create_competitor(nickname=nickname or "", seller_id=seller_id or "",
                       name=name or "", notes=notes or "")
-    return _competitors_table(), dbc.Alert(f"Concorrente adicionado!", color="success"), "", "", "", ""
+    return _competitors_table(), dbc.Alert("Concorrente adicionado!", color="success"), "", "", "", ""
 
 
 @callback(
@@ -167,7 +199,6 @@ def open_edit_modal(edit_clicks, cancel_click):
         return False, None, "", "", "", "", True
     if isinstance(trigger, dict) and any(edit_clicks):
         comp_id = trigger["index"]
-        from src.database import get_competitor
         c = get_competitor(comp_id)
         if c:
             return True, c["id"], c["name"] or "", c["nickname"] or "", c["seller_id"] or "", c["notes"] or "", bool(c["active"])
@@ -193,6 +224,43 @@ def save_edit(n_clicks, comp_id, name, nickname, seller_id, notes, active):
     update_competitor(comp_id, name=name, nickname=nickname,
                       seller_id=seller_id, notes=notes, active=1 if active else 0)
     return False, _competitors_table(), dbc.Alert("Concorrente atualizado!", color="success")
+
+
+# ── Atualizar Perfis ──
+
+@callback(
+    Output("comp-profile-feedback", "children"),
+    Output("comp-table-container", "children", allow_duplicate=True),
+    Input("btn-update-profiles", "n_clicks"),
+    prevent_initial_call=True,
+)
+def update_profiles(n_clicks):
+    comps = get_competitors(active_only=False)
+    comps_with_id = [c for c in comps if c.get("seller_id")]
+    if not comps_with_id:
+        return dbc.Alert("Nenhum concorrente com Seller ID cadastrado.", color="warning"), no_update
+
+    ml = MLClient()
+    updated = 0
+    for c in comps_with_id:
+        user_data = run_async(ml.get_user(c["seller_id"]))
+        if user_data and "error" not in user_data:
+            rep = user_data.get("seller_reputation", {})
+            update_competitor(
+                c["id"],
+                nickname=user_data.get("nickname", c["nickname"]) or c["nickname"],
+                reputation_level=rep.get("level_id", ""),
+                power_seller=rep.get("power_seller_status", "") or "",
+                total_transactions=rep.get("transactions", {}).get("total", 0) or 0,
+                permalink=user_data.get("permalink", ""),
+                profile_updated_at="CURRENT_TIMESTAMP",
+            )
+            updated += 1
+
+    return (
+        dbc.Alert(f"{updated} perfis atualizados de {len(comps_with_id)} concorrentes.", color="success"),
+        _competitors_table(),
+    )
 
 
 # ── Análise Callback ──

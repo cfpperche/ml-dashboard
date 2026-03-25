@@ -24,6 +24,11 @@ def init_db():
                 name TEXT,
                 notes TEXT DEFAULT '',
                 active INTEGER DEFAULT 1,
+                reputation_level TEXT DEFAULT '',
+                power_seller TEXT DEFAULT '',
+                total_transactions INTEGER DEFAULT 0,
+                permalink TEXT DEFAULT '',
+                profile_updated_at TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
@@ -44,6 +49,19 @@ def init_db():
                 captured_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
+        # Migrações — adicionar colunas novas se não existirem
+        existing = {r[1] for r in conn.execute("PRAGMA table_info(competitors)").fetchall()}
+        migrations = {
+            "reputation_level": "ALTER TABLE competitors ADD COLUMN reputation_level TEXT DEFAULT ''",
+            "power_seller": "ALTER TABLE competitors ADD COLUMN power_seller TEXT DEFAULT ''",
+            "total_transactions": "ALTER TABLE competitors ADD COLUMN total_transactions INTEGER DEFAULT 0",
+            "permalink": "ALTER TABLE competitors ADD COLUMN permalink TEXT DEFAULT ''",
+            "profile_updated_at": "ALTER TABLE competitors ADD COLUMN profile_updated_at TIMESTAMP",
+        }
+        for col, sql in migrations.items():
+            if col not in existing:
+                conn.execute(sql)
+
         conn.execute("""
             CREATE INDEX IF NOT EXISTS idx_price_history_query
             ON price_history(query, captured_at)
@@ -90,12 +108,25 @@ def create_competitor(nickname: str = "", seller_id: str = "",
 
 
 def update_competitor(comp_id: int, **fields) -> bool:
-    allowed = {"nickname", "seller_id", "name", "notes", "active"}
+    allowed = {"nickname", "seller_id", "name", "notes", "active",
+               "reputation_level", "power_seller", "total_transactions",
+               "permalink", "profile_updated_at"}
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:
         return False
-    set_clause = ", ".join(f"{k} = ?" for k in updates)
-    values = list(updates.values()) + [comp_id]
+
+    # profile_updated_at = "CURRENT_TIMESTAMP" é SQL literal
+    parts = []
+    values = []
+    for k, v in updates.items():
+        if v == "CURRENT_TIMESTAMP":
+            parts.append(f"{k} = CURRENT_TIMESTAMP")
+        else:
+            parts.append(f"{k} = ?")
+            values.append(v)
+
+    set_clause = ", ".join(parts)
+    values.append(comp_id)
     with _conn() as conn:
         conn.execute(
             f"UPDATE competitors SET {set_clause}, updated_at = CURRENT_TIMESTAMP WHERE id = ?",

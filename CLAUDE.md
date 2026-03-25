@@ -109,6 +109,13 @@ ml-dashboard/
 - Botão "+ Concorrente" por linha para auto-cadastrar seller no banco
 - Paginação com botões Anterior/Próxima
 
+### /history — Histórico de Preços
+- Dropdown com buscas já realizadas (populado automaticamente)
+- Filtro de período (7 dias, 30 dias, 90 dias, 180 dias, 1 ano)
+- Gráfico de evolução: preço médio, mínimo e máximo ao longo do tempo (Plotly)
+- Tabela resumo por dia (qtd anúncios, média, min, max)
+- Dados salvos automaticamente a cada busca na página /search
+
 ### /competitors — Concorrentes (CRUD)
 - Formulário para cadastrar concorrente (nome, nickname, seller ID, notas)
 - Tabela com todos os concorrentes (ativos e inativos)
@@ -138,22 +145,21 @@ ml-dashboard/
 
 ## Funcionalidades Planejadas (Roadmap)
 
-### v0.2 — Persistência e Histórico (em progresso)
+### v0.2 — Persistência e Histórico ✅
 - [x] SQLite para concorrentes (CRUD completo)
-- [ ] Salvar resultados de busca no SQLite com timestamp (histórico de preços)
-- [ ] Gráfico de evolução de preços ao longo do tempo
-- [ ] Dashboard de tendências (preço subiu/desceu por part number)
-- [ ] Auto-refresh do ML token via refresh_token (quando dá 401)
+- [x] Salvar resultados de busca no SQLite com timestamp (histórico de preços)
+- [x] Página /history com gráfico de evolução de preços (média/min/max por dia)
+- [x] Filtros por query e período (7d a 1 ano) + tabela resumo diário
+- [x] Auto-refresh do ML token via refresh_token (quando dá 401, retenta automaticamente)
 
 ### v0.3 — Análise Avançada
-- [ ] Busca por Part Number específico com comparação entre vendedores
 - [ ] Detecção automática de oportunidades (preço abaixo da média)
 - [ ] Cálculo de margem estimada (preço ML vs custo importação)
 - [ ] Integração com a planilha de cotação (importar custos do Excel)
-- [ ] Alertas de preço (notificar quando um concorrente baixar preço)
+- [ ] Alertas de preço (comparar busca atual vs histórico, mostrar variações)
 
-### v0.4 — Concorrentes Aprofundado
-- [ ] Perfil detalhado de cada concorrente (reputação, tempo de atividade, volume)
+### v0.4 — Concorrentes Aprofundado (em progresso)
+- [ ] Perfil detalhado de cada concorrente (reputação, power seller, volume via /users/{id})
 - [ ] Tracking de novos produtos adicionados por concorrentes
 - [ ] Comparação side-by-side de catálogos
 - [ ] Heatmap de categorias mais vendidas por concorrente
