@@ -7,7 +7,7 @@ import subprocess
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse, parse_qs, quote
 
 import httpx
 from dotenv import set_key, dotenv_values
@@ -102,7 +102,7 @@ def get_ml_auth_url() -> str:
     return (
         f"{ML_AUTH_BASE}?response_type=code"
         f"&client_id={cfg['app_id']}"
-        f"&redirect_uri={cfg['redirect_uri']}"
+        f"&redirect_uri={quote(cfg['redirect_uri'], safe='')}"
     )
 
 
@@ -216,12 +216,13 @@ def open_ml_auth_in_browser():
     import webbrowser
 
     auth_url = get_ml_auth_url()
-    explorer = Path("/mnt/c/Windows/explorer.exe")
+    cmd_exe = Path("/mnt/c/Windows/System32/cmd.exe")
 
-    if explorer.exists():
-        # WSL: abre no browser do Windows via explorer.exe
+    chrome = Path("/mnt/c/Program Files/Google/Chrome/Application/chrome.exe")
+    if chrome.exists():
+        # WSL: abre direto no Chrome do Windows
         subprocess.Popen(
-            [str(explorer), auth_url],
+            [str(chrome), auth_url],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
         )
     else:

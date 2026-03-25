@@ -1,0 +1,22 @@
+/* ML Dashboard custom styles */
+body {
+    background-color: #f8f9fa;
+}
+.metric-card .card-body {
+    padding: 1rem;
+}
+.metric-card .metric-value {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: #0f3460;
+}
+.metric-card .metric-label {
+    font-size: 0.85rem;
+    color: #6c757d;
+}
+.navbar-brand {
+    font-weight: 700;
+}
+.alert-feedback {
+    margin-top: 1rem;
+}

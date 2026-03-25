@@ -2,9 +2,11 @@
 import httpx
 import time
 import os
+import asyncio
 from dotenv import load_dotenv
 
 load_dotenv()
+
 
 class MLClient:
     BASE = "https://api.mercadolibre.com"
@@ -12,20 +14,24 @@ class MLClient:
 
     def __init__(self, token: str | None = None):
         self.token = token or os.getenv("ML_ACCESS_TOKEN", "")
-        self.client = httpx.AsyncClient(
-            base_url=self.BASE,
-            headers={"Authorization": f"Bearer {self.token}"},
-            timeout=20,
-        )
+        self._client = None
         self._last_call = 0
+
+    def _get_client(self) -> httpx.AsyncClient:
+        if self._client is None or self._client.is_closed:
+            self._client = httpx.AsyncClient(
+                base_url=self.BASE,
+                headers={"Authorization": f"Bearer {self.token}"},
+                timeout=20,
+            )
+        return self._client
 
     async def _get(self, path: str, params: dict | None = None) -> dict | None:
         elapsed = time.time() - self._last_call
         if elapsed < 0.4:
-            import asyncio
             await asyncio.sleep(0.4 - elapsed)
         try:
-            r = await self.client.get(path, params=params)
+            r = await self._get_client().get(path, params=params)
             self._last_call = time.time()
             if r.status_code == 200:
                 return r.json()
@@ -33,18 +39,128 @@ class MLClient:
         except Exception as e:
             return {"error": "exception", "detail": str(e)}
 
-    async def search(self, query: str, limit: int = 50, offset: int = 0) -> dict:
-        return await self._get(f"/sites/{self.SITE}/search", {
-            "q": query, "limit": min(limit, 50), "offset": offset,
+    # ── BUSCA ──────────────────────────────────────────
+
+    async def search(self, query: str, limit: int = 50, offset: int = 0,
+                     status: str = "all") -> dict:
+        """
+        Busca via /products/search (catálogo ML).
+        Para cada produto, enriquece com dados dos anúncios.
+        status: "all", "active", "inactive"
+        """
+        products = await self._get("/products/search", {
+            "site_id": self.SITE, "q": query,
+            "limit": min(limit, 50), "offset": offset,
         })
 
+        if not products or "error" in products:
+            return products or {"error": "no_results", "results": []}
+
+        # Determinar quais status buscar nos items
+        if status == "all":
+            statuses = ["active", "inactive"]
+        else:
+            statuses = [status]
+
+        results = []
+        for prod in products.get("results", []):
+            prod_id = prod.get("id")
+            if not prod_id:
+                continue
+
+            attrs = {a["id"]: a.get("value_name", "") for a in prod.get("attributes", [])}
+            found_items = False
+
+            for st in statuses:
+                items_resp = await self._get(f"/products/{prod_id}/items", {"status": st})
+                if items_resp and "error" not in items_resp:
+                    for item in items_resp.get("results", []):
+                        found_items = True
+                        results.append({
+                            "id": item.get("item_id", ""),
+                            "title": prod.get("name", ""),
+                            "price": item.get("price", 0),
+                            "original_price": item.get("original_price"),
+                            "currency_id": item.get("currency_id", "BRL"),
+                            "condition": item.get("condition", ""),
+                            "status": st,
+                            "seller": {"id": item.get("seller_id", ""), "nickname": ""},
+                            "shipping": item.get("shipping", {}),
+                            "permalink": f"https://www.mercadolivre.com.br/p/{prod_id}",
+                            "catalog_product_id": prod_id,
+                            "brand": attrs.get("BRAND", ""),
+                            "model": attrs.get("MODEL", ""),
+                            "capacity": attrs.get("RAM_MEMORY_MODULE_TOTAL_CAPACITY", ""),
+                        })
+
+            if not found_items:
+                results.append({
+                    "id": prod_id,
+                    "title": prod.get("name", ""),
+                    "price": 0,
+                    "condition": "",
+                    "status": "catalog_only",
+                    "seller": {"id": "", "nickname": "Catálogo ML"},
+                    "shipping": {},
+                    "permalink": f"https://www.mercadolivre.com.br/p/{prod_id}",
+                    "catalog_product_id": prod_id,
+                    "brand": attrs.get("BRAND", ""),
+                    "model": attrs.get("MODEL", ""),
+                    "capacity": attrs.get("RAM_MEMORY_MODULE_TOTAL_CAPACITY", ""),
+                })
+
+            if len(results) >= limit:
+                break
+
+        return {
+            "results": results[:limit],
+            "paging": {
+                "total": products.get("paging", {}).get("total", len(results)),
+                "limit": limit,
+                "offset": offset,
+            },
+            "source": "products/search",
+        }
+
+    # ── CONCORRENTES ───────────────────────────────────
+
     async def search_seller(self, nickname: str = None, seller_id: str = None, limit: int = 50) -> dict:
+        """Busca items de um vendedor."""
+        # Tenta /sites/MLB/search
         params = {"limit": limit}
         if seller_id:
             params["seller_id"] = seller_id
         elif nickname:
             params["nickname"] = nickname
-        return await self._get(f"/sites/{self.SITE}/search", params)
+        result = await self._get(f"/sites/{self.SITE}/search", params)
+
+        if result and "error" not in result:
+            return result
+
+        # Fallback: se temos seller_id, usa /users/{id}/items/search
+        uid = seller_id
+        if uid:
+            return await self._seller_items(uid, limit)
+
+        return {"error": "search_blocked", "results": [],
+                "detail": "Busca por vendedor bloqueada pela API do ML. Use seller_id."}
+
+    async def _seller_items(self, user_id: str, limit: int) -> dict:
+        """Busca items de um vendedor via /users/{id}/items/search."""
+        r = await self._get(f"/users/{user_id}/items/search", {"limit": limit})
+        if r and "error" not in r:
+            item_ids = r.get("results", [])
+            if item_ids:
+                # Buscar detalhes (só funciona pra items próprios)
+                items = []
+                for item_id in item_ids[:limit]:
+                    detail = await self.get_item(item_id)
+                    if detail and "error" not in detail:
+                        items.append(detail)
+                return {"results": items, "paging": r.get("paging", {})}
+        return {"error": "no_items", "results": []}
+
+    # ── DETALHES ───────────────────────────────────────
 
     async def get_item(self, item_id: str) -> dict:
         return await self._get(f"/items/{item_id}")
