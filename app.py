@@ -5,7 +5,7 @@ Rode com: streamlit run app.py
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import asyncio, json, os
+import asyncio, json, os, time
 from datetime import datetime
 from io import BytesIO
 from dotenv import load_dotenv
@@ -13,6 +13,12 @@ from dotenv import load_dotenv
 load_dotenv()
 from src.ml_api import MLClient
 from src.ai_insights import analyze_with_claude, format_products_for_analysis
+from src.auth import (
+    get_claude_credentials, sync_claude_token,
+    get_ml_auth_url, extract_code_from_url,
+    exchange_ml_code, refresh_ml_token, load_env, save_env,
+    open_ml_auth_in_browser,
+)
 
 st.set_page_config(page_title="ML Competitor Intelligence", page_icon="🔍", layout="wide")
 
@@ -67,7 +73,7 @@ with st.sidebar:
 st.markdown('<p class="main-header">🔍 ML Competitor Intelligence</p>', unsafe_allow_html=True)
 st.caption("Peças de Servidor · Mercado Livre API + Claude AI")
 
-tab1, tab2, tab3, tab4 = st.tabs(["🔎 Busca","👥 Concorrentes","🤖 Insights IA","📥 Exportar"])
+tab1, tab2, tab3, tab4, tab5 = st.tabs(["🔎 Busca","👥 Concorrentes","🤖 Insights IA","📥 Exportar","⚙️ Settings"])
 
 # ══════════════════════════════════════════════════════
 # TAB 1 — BUSCA
@@ -228,6 +234,104 @@ with tab4:
         st.download_button("⬇️ Análises IA (JSON)",
                            json.dumps(st.session_state.analyses, ensure_ascii=False, indent=2),
                            f"ml_insights_{datetime.now():%Y%m%d_%H%M}.json")
+
+# ══════════════════════════════════════════════════════
+# TAB 5 — SETTINGS / OAUTH
+# ══════════════════════════════════════════════════════
+with tab5:
+    st.subheader("⚙️ Configuração de Tokens")
+
+    # ── CLAUDE ──
+    st.markdown("### Claude AI (OAuth)")
+    creds = get_claude_credentials()
+    if creds:
+        st.success(f"Token encontrado — plano **{creds['subscription']}**")
+        exp = datetime.fromtimestamp(creds["expires_at"] / 1000)
+        st.caption(f"Expira em: {exp:%d/%m/%Y %H:%M}")
+        if st.button("🔄 Sincronizar token do Claude para .env", key="sync_claude"):
+            ok, msg = sync_claude_token()
+            if ok:
+                st.success(msg)
+            else:
+                st.error(msg)
+    else:
+        st.warning("Token Claude não encontrado.")
+        st.info("Rode `claude setup-token` no terminal e depois clique abaixo.")
+        if st.button("🔄 Verificar novamente", key="recheck_claude"):
+            ok, msg = sync_claude_token()
+            if ok:
+                st.success(msg)
+                st.rerun()
+            else:
+                st.error(msg)
+
+    st.divider()
+
+    # ── MERCADO LIVRE ──
+    st.markdown("### Mercado Livre (OAuth)")
+    env = load_env()
+    ml_token_ok = env.get("ML_ACCESS_TOKEN", "").startswith("APP_USR-")
+    ml_secret_ok = env.get("ML_CLIENT_SECRET", "") not in ("", "SEU_SECRET_KEY")
+
+    # Status atual
+    col1, col2 = st.columns(2)
+    col1.metric("Access Token", "Configurado" if ml_token_ok else "Pendente")
+    col2.metric("Client Secret", "Configurado" if ml_secret_ok else "Pendente")
+
+    # Input do client secret se não tiver
+    if not ml_secret_ok:
+        st.warning("Preencha o Client Secret da sua aplicação ML.")
+        secret_input = st.text_input(
+            "ML Client Secret",
+            type="password",
+            help="Encontre em: https://developers.mercadolivre.com.br/detalhe-da-aplicacao/4724076426479961",
+        )
+        if secret_input and st.button("💾 Salvar Client Secret", key="save_secret"):
+            save_env("ML_CLIENT_SECRET", secret_input)
+            st.success("Client Secret salvo no .env")
+            st.rerun()
+    else:
+        # Flow OAuth — abre browser, usuário cola URL de volta
+        if st.button("🔐 Autorizar Mercado Livre", type="primary", key="auth_ml"):
+            open_ml_auth_in_browser()
+            st.session_state.ml_auth_opened = True
+
+        if st.session_state.get("ml_auth_opened"):
+            st.info("Browser aberto. Faça login, autorize, e cole a URL da página final aqui:")
+            callback_url = st.text_input(
+                "URL de callback",
+                placeholder="Cole a URL aqui (contém ?code=TG-...)",
+                key="ml_callback_url",
+                label_visibility="collapsed",
+            )
+            if callback_url:
+                code = extract_code_from_url(callback_url)
+                if code:
+                    with st.spinner("Trocando code por tokens..."):
+                        ok, msg, data = exchange_ml_code(code)
+                    if ok:
+                        st.success(msg)
+                        st.session_state.ml_auth_opened = False
+                        st.session_state.ml = MLClient(data["access_token"])
+                        st.rerun()
+                    else:
+                        st.error(msg)
+                else:
+                    st.warning("URL inválida — parâmetro `code` não encontrado.")
+
+        # Refresh manual
+        if ml_token_ok:
+            st.divider()
+            if st.button("🔄 Renovar Token (refresh)", key="refresh_ml"):
+                with st.spinner("Renovando..."):
+                    ok, msg = refresh_ml_token()
+                if ok:
+                    st.success(msg)
+                    new_env = load_env()
+                    st.session_state.ml = MLClient(new_env["ML_ACCESS_TOKEN"])
+                    st.rerun()
+                else:
+                    st.error(msg)
 
 st.divider()
 st.caption("ML Competitor Intelligence v0.1 · Claude Max + ML API")
